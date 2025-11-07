@@ -84,7 +84,7 @@ class DatabaseSeeder extends Seeder
                 'role_id' => 1,
                 'username' => 'admin_utama',
                 'email' => 'admin@broilink.com',
-                'password' => '$2y$12$n4Sjb3nUYu8jd.lOBd.yquu3T.kX0FR0ebr3HJ37mh6IV0Aq80GE6',
+                'password' => Hash::make('password'),
                 'name' => 'Admin Utama Broilink',
                 'phone_number' => '08123456789',
                 'status' => 'active',
