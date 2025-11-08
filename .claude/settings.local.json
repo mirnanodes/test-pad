@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php artisan tinker:*)",
+      "Bash(php artisan:*)",
+      "Bash(php test_dashboard.php:*)",
+      "Bash(php test_admin_dashboard.php:*)",
+      "Bash(php test_dashboard_full.php:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
