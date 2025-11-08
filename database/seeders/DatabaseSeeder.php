@@ -288,9 +288,10 @@ class DatabaseSeeder extends Seeder
         }
     }
 
-    private function seedRequestLogs()
+private function seedRequestLogs()
     {
-        DB::table('request_log')->insert([
+        $logs = [
+            // Guest 1: (Diubah) Dibuat 2 jam yang lalu
             [
                 'user_id' => 0, // Guest
                 'sender_name' => 'Dani Prasetyo',
@@ -301,10 +302,11 @@ class DatabaseSeeder extends Seeder
                     'description' => 'Saya ingin mendaftar sebagai peternak'
                 ]),
                 'status' => 'menunggu',
-                'sent_time' => now(),
+                'sent_time' => now()->subHours(2), // Diubah dari now()
             ],
+            // Owner 1: (Tetap) Dibuat 2 hari yang lalu
             [
-                'user_id' => 2,
+                'user_id' => 2, // Budi Santoso
                 'sender_name' => 'Budi Santoso',
                 'request_type' => 'tambah_kandang',
                 'request_content' => json_encode([
@@ -315,7 +317,47 @@ class DatabaseSeeder extends Seeder
                 'status' => 'diproses',
                 'sent_time' => now()->subDays(2),
             ],
-        ]);
+            // (Baru) Guest 2: Dibuat 1 hari yang lalu
+            [
+                'user_id' => 0, // Guest
+                'sender_name' => 'Siti Aminah',
+                'request_type' => 'akun_baru',
+                'request_content' => json_encode([
+                    'name' => 'Siti Aminah',
+                    'phone' => '0811111111',
+                    'description' => 'Saya ingin mendaftar sebagai owner'
+                ]),
+                'status' => 'menunggu',
+                'sent_time' => now()->subDay(),
+            ],
+            // (Baru) Owner 2: Dibuat 3 hari yang lalu, ditolak
+            [
+                'user_id' => 3, // Andi Wijaya
+                'sender_name' => 'Andi Wijaya',
+                'request_type' => 'tambah_kandang',
+                'request_content' => json_encode([
+                    'farm_name' => 'Kandang B2',
+                    'location' => 'Bantul',
+                    'capacity' => 10000
+                ]),
+                'status' => 'ditolak',
+                'sent_time' => now()->subDays(3),
+            ],
+            // (Baru) Peternak 1: Dibuat 5 jam yang lalu, disetujui
+             [
+                'user_id' => 4, // Agus Setiawan
+                'sender_name' => 'Agus Setiawan',
+                'request_type' => 'lainnya',
+                'request_content' => json_encode([
+                    'subject' => 'Laporan Pakan',
+                    'message' => 'Stok pakan menipis, perlu order baru.'
+                ]),
+                'status' => 'disetujui',
+                'sent_time' => now()->subHours(5),
+            ],
+        ];
+
+        DB::table('request_log')->insert($logs);
     }
 
     private function printCredentials()

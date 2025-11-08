@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Models\{User, Farm, RequestLog};
 use Illuminate\Http\Request;
+use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
@@ -26,11 +27,30 @@ class DashboardController extends Controller
             ->count();
 
         // Get recent requests with user info (latest 5, all users)
-        $recentRequests = RequestLog::with(['user.role'])
+        $recentRequests = RequestLog::with('user')
             ->newest()
             ->limit(5)
             ->get()
-            ->map(fn($r) => $r->getFormattedDisplay());
+            ->map(function($r) {
+                // Cek jika request punya relasi user (Owner/Peternak)
+                if ($r->user) {
+                    // Gunakan fungsi lama, karena ini sudah benar
+                    return $r->getFormattedDisplay();
+                }
+
+                // PERBAIKAN: Jika ini GUEST (user == null)
+                // Buat data array secara manual, karena getFormattedDisplay() gagal
+                return [
+                    'id' => $r->request_id,
+                    'name' => $r->sender_name ?? 'Tamu',
+                    'role' => 'Guest',
+                    'type' => $r->request_type,
+                    'status' => $r->status,
+                    'details' => $r->request_content,
+                    'created_at' => $r->sent_time ? Carbon::parse($r->sent_time)->diffForHumans() : 'Waktu tidak tersedia',
+                    'updated_at' => $r->sent_time ? Carbon::parse($r->sent_time)->diffForHumans() : 'Waktu tidak tersedia',
+                ];
+            });
 
         return response()->json([
             'success' => true,

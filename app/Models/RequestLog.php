@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Carbon\Carbon;
 
 class RequestLog extends Model
 {
@@ -163,19 +164,36 @@ class RequestLog extends Model
      */
     public function getFormattedDisplay()
     {
+        $role = 'Guest'; // Default
+        if ($this->user && $this->user->role) {
+            $role = $this->user->role->name;
+        }
+        $name = $this->sender_name;
+
+        if (empty($name)) {
+            if ($this->user) {
+                $name = $this->user->name;
+            }
+            else {
+                $name = ($role === 'Guest') ? 'Tamu' : 'Nama Tidak Tersedia';
+            }
+        }
+
+        $timeString = 'Waktu tidak tersedia';
+        if ($this->sent_time) {
+            $timeString = Carbon::parse($this->sent_time)->diffForHumans();
+        }
+
         return [
-            'request_id' => $this->request_id,
-            'sender_name' => $this->sender_name ?? 'Guest',
-            'request_type' => $this->getRequestTypeLabel(),
-            'request_content' => $this->request_content,
+            'id' => $this->request_id,
+            'name' => $name,
+            'role' => $role,
+            'type' => $this->request_type,
             'status' => $this->status,
-            'status_color' => $this->getStatusColor(),
-            'sent_time' => $this->sent_time->format('d M Y H:i'),
-            'user' => $this->user ? [
-                'user_id' => $this->user->user_id,
-                'username' => $this->user->username,
-                'role' => $this->user->role_name,
-            ] : null,
+            'details' => $this->request_content,
+
+            'created_at' => $timeString,
+            'updated_at' => $timeString,
         ];
     }
 }
