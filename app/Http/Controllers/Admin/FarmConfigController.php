@@ -89,17 +89,21 @@ class FarmConfigController extends Controller
         return response()->json(['success' => true, 'message' => 'Farm berhasil dihapus']);
     }
 
-    public function getConfig($id)
-    {
-        $farm = Farm::findOrFail($id);
-        $config = $farm->getConfigArray();
+    public function getFarmConfig(Request $request)
+{
+    $farmId = $request->farm_id ?? 1;
+    $farm = Farm::findOrFail($farmId);
+    $config = $farm->getConfigArray();
 
-        return response()->json(['success' => true, 'data' => $config]);
-    }
+    return response()->json([
+        'success' => true,
+        'data' => $config
+    ]);
+}
 
-    public function updateConfig(Request $request, $id)
-    {
-        $farm = Farm::findOrFail($id);
+    public function updateFarmConfig(Request $request)
+{
+    $farmId = $request->farm_id ?? 1;
 
         $validated = $request->validate([
             'suhu_normal_min' => 'nullable|numeric',
@@ -118,8 +122,11 @@ class FarmConfigController extends Controller
             'target_bobot' => 'nullable|numeric',
         ]);
 
-        FarmConfig::updateMultiple($id, $validated);
+        FarmConfig::updateMultiple($farmId, $validated);
 
-        return response()->json(['success' => true, 'message' => 'Konfigurasi berhasil diupdate']);
-    }
+    return response()->json([
+        'success' => true,
+        'message' => 'Konfigurasi berhasil diupdate'
+    ]);
+}
 }

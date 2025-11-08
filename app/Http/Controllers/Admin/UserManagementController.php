@@ -15,49 +15,60 @@ class UserManagementController extends Controller
      * GET /api/admin/users?role=Owner&status=active&search=john
      */
     public function index(Request $request)
-    {
-        $query = User::with('role')
-            ->excludeAdmins(); // tidak tampilkan admin
+{
+    $query = User::with('role')
+        ->excludeAdmins(); // tidak tampilkan admin
 
-        // Filter by role
-        if ($request->has('role')) {
-            $query->byRoleName($request->role);
-        }
+    // Filter by role
+    if ($request->has('role')) {
+        $query->byRoleName($request->role);
+    }
 
-        // Filter by status
-        if ($request->has('status')) {
-            $query->where('status', $request->status);
-        }
+    // Filter by status
+    if ($request->has('status')) {
+        $query->where('status', $request->status);
+    }
 
-        // Search by name, username, or email
-        if ($request->has('search')) {
-            $search = $request->search;
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                  ->orWhere('username', 'like', "%{$search}%")
-                  ->orWhere('email', 'like', "%{$search}%");
-            });
-        }
+    // Search by name, username, or email
+    if ($request->has('search')) {
+        $search = $request->search;
+        $query->where(function ($q) use ($search) {
+            $q->where('name', 'like', "%{$search}%")
+              ->orWhere('username', 'like', "%{$search}%")
+              ->orWhere('email', 'like', "%{$search}%");
+        });
+    }
 
-        $users = $query->orderBy('date_joined', 'desc')->get();
+    $users = $query->orderBy('date_joined', 'desc')->get();
 
-        return response()->json([
-            'success' => true,
-            'data' => $users->map(function ($user) {
+    // ⬅️ TAMBAH STATS
+    $totalOwners = User::byRoleName('Owner')->count();
+    $totalPeternak = User::byRoleName('Peternak')->count();
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'users' => $users->map(function ($user) {
                 return [
                     'user_id' => $user->user_id,
                     'username' => $user->username,
                     'name' => $user->name,
                     'email' => $user->email,
-                    'role' => $user->role->name,
+                    'role' => $user->role,
                     'phone_number' => $user->phone_number,
                     'status' => $user->status,
-                    'date_joined' => $user->date_joined?->format('d M Y'),
-                    'last_login' => $user->last_login?->format('d M Y H:i'),
+                    'date_joined' => $user->date_joined,
+                    'last_login' => $user->last_login,
                 ];
             }),
-        ]);
-    }
+            'stats' => [
+                'total' => $users->count(),
+                'owner' => $totalOwners,
+                'peternak' => $totalPeternak,
+            ]
+        ]
+    ]);
+}
 
     /**
      * Create new user (Owner or Peternak)
