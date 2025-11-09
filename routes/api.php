@@ -66,8 +66,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::put('/requests/{id}/status', [RequestLogController::class, 'updateStatus']);
     });
 
+    // Farm Configuration (line ~68)
+        Route::get('/farm-config', [AdminFarmConfigController::class, 'getFarmConfig']);
+        Route::put('/farm-config', [AdminFarmConfigController::class, 'updateFarmConfig']);
+        Route::post('/farm-config/reset', [AdminFarmConfigController::class, 'resetConfig']);
+
     // Owner routes
-    Route::prefix('owner')->middleware('role:Owner')->group(function () {
+        Route::prefix('owner')->middleware('role:Owner')->group(function () {
         // Dashboard
         Route::get('/dashboard', [OwnerDashboardController::class, 'index']);
         

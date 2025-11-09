@@ -58,4 +58,19 @@ class RequestLogController extends Controller
         ]);
     }
 
+    public function updateStatus(Request $request, $id)
+{
+    $validated = $request->validate([
+        'status' => 'required|in:menunggu,diproses,selesai,ditolak'
+    ]);
+
+    $requestLog = RequestLog::findOrFail($id);
+    $requestLog->update(['status' => $validated['status']]);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Status berhasil diupdate'
+    ]);
+}
+
 }

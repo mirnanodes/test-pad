@@ -129,4 +129,16 @@ class FarmConfigController extends Controller
         'message' => 'Konfigurasi berhasil diupdate'
     ]);
 }
+
+    public function resetConfig(Request $request)
+{
+    $farmId = $request->farm_id ?? 1;
+    FarmConfig::createDefaultsForFarm($farmId);
+    
+    return response()->json([
+        'success' => true,
+        'message' => 'Konfigurasi berhasil direset ke default'
+    ]);
+}
+
 }

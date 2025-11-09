@@ -1,0 +1,1422 @@
+==================================================
+FILE: app/Http/Controllers/Admin/DashboardController.php
+==================================================
+
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\{User, Farm, RequestLog};
+use Illuminate\Http\Request;
+use Carbon\Carbon;
+
+class DashboardController extends Controller
+{
+    public function index()
+    {
+        // Count all users by role (global counts, not filtered by auth user)
+        $totalOwners = User::byRoleName('Owner')->count();
+        $totalPeternak = User::byRoleName('Peternak')->count();
+
+        // Count all farms (global count)
+        $totalFarms = Farm::count();
+
+        // Count pending requests (all users)
+        $pendingRequests = RequestLog::pending()->count();
+
+        // Count guest requests (requests from non-authenticated users)
+        $guestRequests = RequestLog::where('user_id', 0)
+            ->orWhereNull('user_id')
+            ->count();
+
+        // Get recent requests with user info (latest 5, all users)
+        $recentRequests = RequestLog::with('user')
+            ->newest()
+            ->limit(5)
+            ->get()
+            ->map(function($r) {
+                // Cek jika request punya relasi user (Owner/Peternak)
+                if ($r->user) {
+                    // Gunakan fungsi lama, karena ini sudah benar
+                    return $r->getFormattedDisplay();
+                }
+
+                // PERBAIKAN: Jika ini GUEST (user == null)
+                // Buat data array secara manual, karena getFormattedDisplay() gagal
+                return [
+                    'id' => $r->request_id,
+                    'name' => $r->sender_name ?? 'Tamu',
+                    'role' => 'Guest',
+                    'type' => $r->request_type,
+                    'status' => $r->status,
+                    'details' => $r->request_content,
+                    'created_at' => $r->sent_time ? Carbon::parse($r->sent_time)->diffForHumans() : 'Waktu tidak tersedia',
+                    'updated_at' => $r->sent_time ? Carbon::parse($r->sent_time)->diffForHumans() : 'Waktu tidak tersedia',
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'total_users' => $totalOwners + $totalPeternak,
+                'total_owners' => $totalOwners,
+                'total_peternak' => $totalPeternak,
+                'total_farms' => $totalFarms,
+                'pending_requests' => $pendingRequests,
+                'guest_requests' => $guestRequests,
+                'recent_requests' => $recentRequests,
+            ]
+        ]);
+    }
+}
+
+
+
+==================================================
+FILE: app/Http/Controllers/Admin/UserManagementController.php
+==================================================
+
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\{User, Role};
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
+
+class UserManagementController extends Controller
+{
+    /**
+     * List all users (exclude admins)
+     * GET /api/admin/users?role=Owner&status=active&search=john
+     */
+    public function index(Request $request)
+{
+    $query = User::with('role')
+        ->excludeAdmins(); // tidak tampilkan admin
+
+    // Filter by role
+    if ($request->has('role')) {
+        $query->byRoleName($request->role);
+    }
+
+    // Filter by status
+    if ($request->has('status')) {
+        $query->where('status', $request->status);
+    }
+
+    // Search by name, username, or email
+    if ($request->has('search')) {
+        $search = $request->search;
+        $query->where(function ($q) use ($search) {
+            $q->where('name', 'like', "%{$search}%")
+              ->orWhere('username', 'like', "%{$search}%")
+              ->orWhere('email', 'like', "%{$search}%");
+        });
+    }
+
+    $users = $query->orderBy('date_joined', 'desc')->get();
+
+    // ⬅️ TAMBAH STATS
+    $totalOwners = User::byRoleName('Owner')->count();
+    $totalPeternak = User::byRoleName('Peternak')->count();
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'users' => $users->map(function ($user) {
+                return [
+                    'user_id' => $user->user_id,
+                    'username' => $user->username,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'role' => $user->role,
+                    'phone_number' => $user->phone_number,
+                    'status' => $user->status,
+                    'date_joined' => $user->date_joined,
+                    'last_login' => $user->last_login,
+                ];
+            }),
+            'stats' => [
+                'total' => $users->count(),
+                'owner' => $totalOwners,
+                'peternak' => $totalPeternak,
+            ]
+        ]
+    ]);
+}
+
+    /**
+     * Create new user (Owner or Peternak)
+     * POST /api/admin/users
+     */
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'username' => 'required|string|max:50|unique:users,username',
+            'email' => 'required|email|max:100|unique:users,email',
+            'password' => 'required|string|min:6',
+            'name' => 'required|string|max:100',
+            'role_id' => 'required|exists:roles,id',
+            'phone_number' => 'nullable|string|max:20',
+            'status' => 'required|in:active,inactive',
+            'farm_id' => 'nullable|exists:farms,farm_id', // untuk peternak
+        ]);
+
+        // Tidak boleh create admin
+        if ($validated['role_id'] == Role::ROLE_ADMIN) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak dapat membuat user dengan role Admin',
+            ], 403);
+        }
+
+        $user = User::create([
+            'username' => $validated['username'],
+            'email' => $validated['email'],
+            'password' => Hash::make($validated['password']),
+            'name' => $validated['name'],
+            'role_id' => $validated['role_id'],
+            'phone_number' => $validated['phone_number'] ?? null,
+            'status' => $validated['status'],
+            'date_joined' => now(),
+        ]);
+
+        // Jika peternak, assign ke farm
+        if ($validated['role_id'] == Role::ROLE_PETERNAK && isset($validated['farm_id'])) {
+            $farm = \App\Models\Farm::find($validated['farm_id']);
+            if ($farm) {
+                $farm->update(['peternak_id' => $user->user_id]);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User berhasil dibuat',
+            'data' => $user->load('role'),
+        ], 201);
+    }
+
+    /**
+     * Get user detail
+     * GET /api/admin/users/{id}
+     */
+    public function show($id)
+    {
+        $user = User::with(['role', 'ownedFarms', 'assignedFarm'])
+            ->findOrFail($id);
+
+        $data = [
+            'user_id' => $user->user_id,
+            'username' => $user->username,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role->name,
+            'role_id' => $user->role_id,
+            'phone_number' => $user->phone_number,
+            'profile_pic' => $user->profile_pic,
+            'status' => $user->status,
+            'date_joined' => $user->date_joined?->format('d M Y'),
+            'last_login' => $user->last_login?->format('d M Y H:i'),
+        ];
+
+        // Add farms info
+        if ($user->isOwner()) {
+            $data['farms'] = $user->ownedFarms->map(function ($farm) {
+                return [
+                    'farm_id' => $farm->farm_id,
+                    'farm_name' => $farm->farm_name,
+                    'location' => $farm->location,
+                ];
+            });
+        } elseif ($user->isPeternak() && $user->assignedFarm) {
+            $data['assigned_farm'] = [
+                'farm_id' => $user->assignedFarm->farm_id,
+                'farm_name' => $user->assignedFarm->farm_name,
+                'location' => $user->assignedFarm->location,
+            ];
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * Update user
+     * PUT /api/admin/users/{id}
+     */
+    public function update(Request $request, $id)
+    {
+        $user = User::findOrFail($id);
+
+        // Tidak boleh edit admin
+        if ($user->isAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak dapat mengubah user Admin',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'username' => ['sometimes', 'string', 'max:50', Rule::unique('users')->ignore($user->user_id, 'user_id')],
+            'email' => ['sometimes', 'email', 'max:100', Rule::unique('users')->ignore($user->user_id, 'user_id')],
+            'password' => 'sometimes|string|min:6',
+            'name' => 'sometimes|string|max:100',
+            'phone_number' => 'nullable|string|max:20',
+            'status' => 'sometimes|in:active,inactive',
+            'farm_id' => 'nullable|exists:farms,farm_id',
+        ]);
+
+        if (isset($validated['password'])) {
+            $validated['password'] = Hash::make($validated['password']);
+        }
+
+        $user->update($validated);
+
+        // Update farm assignment for peternak
+        if ($user->isPeternak() && isset($validated['farm_id'])) {
+            // Remove from old farm
+            if ($user->assignedFarm) {
+                $user->assignedFarm->update(['peternak_id' => null]);
+            }
+            // Assign to new farm
+            $farm = \App\Models\Farm::find($validated['farm_id']);
+            if ($farm) {
+                $farm->update(['peternak_id' => $user->user_id]);
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User berhasil diupdate',
+            'data' => $user->load('role'),
+        ]);
+    }
+
+    /**
+     * Delete user
+     * DELETE /api/admin/users/{id}
+     */
+    public function destroy($id)
+    {
+        $user = User::findOrFail($id);
+
+        // Tidak boleh delete admin
+        if ($user->isAdmin()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Tidak dapat menghapus user Admin',
+            ], 403);
+        }
+
+        // Remove farm assignment if peternak
+        if ($user->isPeternak() && $user->assignedFarm) {
+            $user->assignedFarm->update(['peternak_id' => null]);
+        }
+
+        $user->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'User berhasil dihapus',
+        ]);
+    }
+}
+
+
+==================================================
+FILE: app/Http/Controllers/Admin/FarmConfigController.php
+==================================================
+
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\{Farm, FarmConfig};
+use Illuminate\Http\Request;
+
+class FarmConfigController extends Controller
+{
+    public function index()
+    {
+        $farms = Farm::with(['owner', 'peternak'])->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $farms->map(fn($f) => [
+                'farm_id' => $f->farm_id,
+                'farm_name' => $f->farm_name,
+                'location' => $f->location,
+                'owner' => $f->owner->name,
+                'peternak' => $f->peternak?->name,
+                'status' => $f->calculateStatus(),
+            ])
+        ]);
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'owner_id' => 'required|exists:users,user_id',
+            'farm_name' => 'required|string|max:100',
+            'location' => 'nullable|string|max:255',
+            'initial_population' => 'nullable|integer',
+            'initial_weight' => 'nullable|numeric',
+            'farm_area' => 'nullable|integer',
+        ]);
+
+        $farm = Farm::create($validated);
+
+        // Create default config
+        FarmConfig::createDefaultsForFarm($farm->farm_id);
+
+        return response()->json(['success' => true, 'message' => 'Farm berhasil dibuat', 'data' => $farm], 201);
+    }
+
+    public function show($id)
+    {
+        $farm = Farm::with(['owner', 'peternak', 'latestSensorData'])->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'farm_id' => $farm->farm_id,
+                'farm_name' => $farm->farm_name,
+                'location' => $farm->location,
+                'owner' => $farm->owner->name,
+                'peternak' => $farm->peternak?->name,
+                'initial_population' => $farm->initial_population,
+                'initial_weight' => $farm->initial_weight,
+                'farm_area' => $farm->farm_area,
+                'status' => $farm->calculateStatus(),
+                'latest_sensor' => $farm->latestSensorData,
+            ]
+        ]);
+    }
+
+    public function update(Request $request, $id)
+    {
+        $farm = Farm::findOrFail($id);
+
+        $validated = $request->validate([
+            'farm_name' => 'sometimes|string|max:100',
+            'location' => 'nullable|string|max:255',
+            'initial_population' => 'nullable|integer',
+            'initial_weight' => 'nullable|numeric',
+            'farm_area' => 'nullable|integer',
+            'peternak_id' => 'nullable|exists:users,user_id',
+        ]);
+
+        $farm->update($validated);
+
+        return response()->json(['success' => true, 'message' => 'Farm berhasil diupdate', 'data' => $farm]);
+    }
+
+    public function destroy($id)
+    {
+        Farm::findOrFail($id)->delete();
+        return response()->json(['success' => true, 'message' => 'Farm berhasil dihapus']);
+    }
+
+    public function getFarmConfig(Request $request)
+{
+    $farmId = $request->farm_id ?? 1;
+    $farm = Farm::findOrFail($farmId);
+    $config = $farm->getConfigArray();
+
+    return response()->json([
+        'success' => true,
+        'data' => $config
+    ]);
+}
+
+    public function updateFarmConfig(Request $request)
+{
+    $farmId = $request->farm_id ?? 1;
+
+        $validated = $request->validate([
+            'suhu_normal_min' => 'nullable|numeric',
+            'suhu_normal_max' => 'nullable|numeric',
+            'suhu_kritis_rendah' => 'nullable|numeric',
+            'suhu_kritis_tinggi' => 'nullable|numeric',
+            'kelembapan_normal_min' => 'nullable|numeric',
+            'kelembapan_normal_max' => 'nullable|numeric',
+            'kelembapan_kritis_rendah' => 'nullable|numeric',
+            'kelembapan_kritis_tinggi' => 'nullable|numeric',
+            'amonia_max' => 'nullable|numeric',
+            'amonia_kritis' => 'nullable|numeric',
+            'pakan_min' => 'nullable|numeric',
+            'minum_min' => 'nullable|numeric',
+            'pertumbuhan_mingguan_min' => 'nullable|numeric',
+            'target_bobot' => 'nullable|numeric',
+        ]);
+
+        FarmConfig::updateMultiple($farmId, $validated);
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Konfigurasi berhasil diupdate'
+    ]);
+}
+}
+
+
+==================================================
+FILE: app/Http/Controllers/Admin/RequestLogController.php
+==================================================
+
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\RequestLog;
+use Illuminate\Http\Request;
+
+class RequestLogController extends Controller
+{
+    public function index(Request $request)
+{
+    $query = RequestLog::with('user.role');
+
+    if ($request->status) $query->where('status', $request->status);
+    if ($request->type) $query->where('request_type', $request->type);
+
+    // Sort
+    if ($request->sort === 'oldest') {
+        $query->orderBy('sent_time', 'asc');
+    } else {
+        $query->orderBy('sent_time', 'desc');
+    }
+
+    $requests = $query->get();
+
+    return response()->json([
+        'success' => true,
+        'data' => $requests->map(function($r) {
+            // Decode request_content JSON
+            $content = json_decode($r->request_content, true);
+            
+            return [
+                'id' => $r->request_id,
+                'name' => $r->sender_name,
+                'phone' => $content['phone'] ?? $r->phone_number ?? 'N/A', // ⬅️ dari JSON content
+                'request_type' => $r->request_type,
+                'status' => $r->status,
+                'created_at' => $r->sent_time,
+                'details' => $content, // ⬅️ TAMBAH ini untuk modal detail
+                'user' => $r->user ? [
+                    'name' => $r->user->name,
+                    'role' => $r->user->role ? [
+                        'name' => $r->user->role->name
+                    ] : null
+                ] : null
+            ];
+        })
+    ]);
+}
+    public function show($id)
+    {
+        $request = RequestLog::with('user')->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => $request->getFormattedDisplay()
+        ]);
+    }
+
+}
+
+
+
+==================================================
+FILE: routes/api.php
+==================================================
+
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Auth\LoginController;
+use App\Http\Controllers\Auth\AccountRequestController;
+use App\Http\Controllers\Admin\DashboardController as AdminDashboardController;
+use App\Http\Controllers\Admin\UserManagementController;
+use App\Http\Controllers\Admin\FarmConfigController as AdminFarmConfigController;
+use App\Http\Controllers\Admin\RequestLogController;
+use App\Http\Controllers\Owner\DashboardController as OwnerDashboardController;
+use App\Http\Controllers\Owner\MonitoringController;
+use App\Http\Controllers\Owner\AnalysisController;
+use App\Http\Controllers\Peternak\DashboardController as PeternakDashboardController;
+use App\Http\Controllers\Peternak\ManualInputController;
+use App\Http\Controllers\Peternak\ProfileController;
+use App\Http\Controllers\IoTController;
+
+/*
+|--------------------------------------------------------------------------
+| API Routes
+|--------------------------------------------------------------------------
+*/
+
+// Public routes - Authentication
+Route::post('/login', [LoginController::class, 'login']);
+Route::post('/request-account', [AccountRequestController::class, 'submit']);
+Route::get('/request-account/status', [AccountRequestController::class, 'checkStatus']);
+
+// IoT endpoint (dapat ditambahkan authentication dengan API key)
+Route::post('/iot/sensor-data', [IoTController::class, 'storeSensorData']);
+
+// Protected routes - require authentication
+Route::middleware('auth:sanctum')->group(function () {
+    
+    // Common auth routes
+    Route::post('/logout', [LoginController::class, 'logout']);
+    Route::get('/me', [LoginController::class, 'me']);
+
+    // Admin routes
+    Route::prefix('admin')->middleware('role:Admin')->group(function () {
+        // Dashboard
+        Route::get('/dashboard', [AdminDashboardController::class, 'index']);
+        
+        // User Management
+        Route::get('/users', [UserManagementController::class, 'index']);
+        Route::post('/users', [UserManagementController::class, 'store']);
+        Route::get('/users/{id}', [UserManagementController::class, 'show']);
+        Route::put('/users/{id}', [UserManagementController::class, 'update']);
+        Route::delete('/users/{id}', [UserManagementController::class, 'destroy']);
+        
+        // Farm Management
+        Route::get('/farms', [AdminFarmConfigController::class, 'index']);
+        Route::post('/farms', [AdminFarmConfigController::class, 'store']);
+        Route::get('/farms/{id}', [AdminFarmConfigController::class, 'show']);
+        Route::put('/farms/{id}', [AdminFarmConfigController::class, 'update']);
+        Route::delete('/farms/{id}', [AdminFarmConfigController::class, 'destroy']);
+        
+        // Farm Configuration
+        Route::get('/farms/{id}/config', [AdminFarmConfigController::class, 'getConfig']);
+        Route::put('/farms/{id}/config', [AdminFarmConfigController::class, 'updateConfig']);
+        
+        // Request Log Management
+        Route::get('/requests', [RequestLogController::class, 'index']);
+        Route::get('/requests/{id}', [RequestLogController::class, 'show']);
+        Route::put('/requests/{id}/status', [RequestLogController::class, 'updateStatus']);
+    });
+
+    // Owner routes
+    Route::prefix('owner')->middleware('role:Owner')->group(function () {
+        // Dashboard
+        Route::get('/dashboard', [OwnerDashboardController::class, 'index']);
+        
+        // Farms
+        Route::get('/farms', [OwnerDashboardController::class, 'getFarms']);
+        Route::get('/farms/{id}', [OwnerDashboardController::class, 'showFarm']);
+        
+        // Monitoring
+        Route::get('/farms/{id}/monitoring', [MonitoringController::class, 'index']);
+        Route::get('/farms/{id}/latest-sensor', [MonitoringController::class, 'latestSensor']);
+        Route::get('/farms/{id}/sensor-history', [MonitoringController::class, 'sensorHistory']);
+        
+        // Analysis & Reports
+        Route::get('/farms/{id}/analytics', [AnalysisController::class, 'index']);
+        Route::get('/farms/{id}/reports', [AnalysisController::class, 'reports']);
+        Route::get('/farms/{id}/statistics', [AnalysisController::class, 'statistics']);
+        
+        // Request tambah kandang
+        Route::post('/request-farm', [OwnerDashboardController::class, 'requestAddFarm']);
+    });
+
+    // Peternak routes
+    Route::prefix('peternak')->middleware('role:Peternak')->group(function () {
+        // Dashboard
+        Route::get('/dashboard', [PeternakDashboardController::class, 'index']);
+        
+        // Farm assigned
+        Route::get('/farm', [PeternakDashboardController::class, 'getFarm']);
+        
+        // Manual data input
+        Route::get('/manual-data', [ManualInputController::class, 'index']);
+        Route::post('/manual-data', [ManualInputController::class, 'store']);
+        Route::get('/manual-data/{id}', [ManualInputController::class, 'show']);
+        Route::put('/manual-data/{id}', [ManualInputController::class, 'update']);
+        
+        // Profile
+        Route::get('/profile', [ProfileController::class, 'show']);
+        Route::put('/profile', [ProfileController::class, 'update']);
+        Route::post('/profile/photo', [ProfileController::class, 'updatePhoto']);
+    });
+
+    // Common farm status endpoint (accessible by owner and peternak)
+    Route::get('/farms/{id}/status', [IoTController::class, 'getFarmStatus']);
+});
+
+
+
+==================================================
+FILE: app/Models/User.php
+==================================================
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Notifications\Notifiable;
+use Laravel\Sanctum\HasApiTokens;
+
+class User extends Authenticatable
+{
+    use HasApiTokens, HasFactory, Notifiable;
+
+    protected $table = 'users';
+    protected $primaryKey = 'user_id';
+
+    /**
+     * The attributes that are mass assignable.
+     */
+    protected $fillable = [
+        'role_id',
+        'username',
+        'email',
+        'password',
+        'name',
+        'phone_number',
+        'profile_pic',
+        'status',
+        'date_joined',
+        'last_login',
+    ];
+
+    /**
+     * The attributes that should be hidden.
+     */
+    protected $hidden = [
+        'password',
+    ];
+
+    /**
+     * Get the attributes that should be cast.
+     */
+    protected function casts(): array
+    {
+        return [
+            'date_joined' => 'date',
+            'last_login' => 'datetime',
+            'password' => 'hashed',
+        ];
+    }
+
+    /**
+     * Disable timestamps
+     */
+    public $timestamps = false;
+
+    /**
+     * Get the role of the user
+     */
+    public function role()
+    {
+        return $this->belongsTo(Role::class, 'role_id', 'id');
+    }
+
+    /**
+     * Get farms owned by this user (for Owner role)
+     */
+    public function ownedFarms()
+    {
+        return $this->hasMany(Farm::class, 'owner_id', 'user_id');
+    }
+
+    /**
+     * Get farm assigned to peternak (for Peternak role)
+     */
+    public function assignedFarm()
+    {
+        return $this->hasOne(Farm::class, 'peternak_id', 'user_id');
+    }
+
+    /**
+     * Get manual data entries by this user
+     */
+    public function manualDataEntries()
+    {
+        return $this->hasMany(ManualData::class, 'user_id_input', 'user_id');
+    }
+
+    /**
+     * Get request logs by this user
+     */
+    public function requestLogs()
+    {
+        return $this->hasMany(RequestLog::class, 'user_id', 'user_id');
+    }
+
+    /**
+     * Get sent notifications
+     */
+    public function sentNotifications()
+    {
+        return $this->hasMany(NotificationLog::class, 'sender_user_id', 'user_id');
+    }
+
+    /**
+     * Get received notifications
+     */
+    public function receivedNotifications()
+    {
+        return $this->hasMany(NotificationLog::class, 'recipient_user_id', 'user_id');
+    }
+
+    /**
+     * Check if user is admin
+     */
+    public function isAdmin(): bool
+    {
+        return $this->role && $this->role->name === 'Admin';
+    }
+
+    /**
+     * Check if user is owner
+     */
+    public function isOwner(): bool
+    {
+        return $this->role && $this->role->name === 'Owner';
+    }
+
+    /**
+     * Check if user is peternak
+     */
+    public function isPeternak(): bool
+    {
+        return $this->role && $this->role->name === 'Peternak';
+    }
+
+    /**
+     * Update last login timestamp
+     */
+    public function updateLastLogin()
+    {
+        $this->update(['last_login' => now()]);
+    }
+
+    /**
+     * Scope to filter by role name
+     */
+    public function scopeByRoleName($query, $roleName)
+    {
+        return $query->whereHas('role', function ($q) use ($roleName) {
+            $q->where('name', $roleName);
+        });
+    }
+
+    /**
+     * Scope to filter active users
+     */
+    public function scopeActive($query)
+    {
+        return $query->where('status', 'active');
+    }
+
+    /**
+     * Scope to exclude admins
+     */
+    public function scopeExcludeAdmins($query)
+    {
+        return $query->whereHas('role', function ($q) {
+            $q->where('name', '!=', 'Admin');
+        });
+    }
+
+    /**
+     * Get role name
+     */
+    public function getRoleNameAttribute()
+    {
+        return $this->role ? $this->role->name : null;
+    }
+}
+
+
+
+==================================================
+FILE: app/Models/RequestLog.php
+==================================================
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Carbon\Carbon;
+
+class RequestLog extends Model
+{
+    use HasFactory;
+
+    protected $table = 'request_log';
+    protected $primaryKey = 'request_id';
+    public $timestamps = false;
+
+    protected $fillable = [
+        'user_id',
+        'sender_name',
+        'request_type',
+        'request_content',
+        'status',
+        'sent_time',
+    ];
+
+    protected $casts = [
+        'sent_time' => 'datetime',
+    ];
+
+    /**
+     * Status constants
+     */
+    const STATUS_PENDING = 'menunggu';
+    const STATUS_PROCESSING = 'diproses';
+    const STATUS_COMPLETED = 'selesai';
+    const STATUS_REJECTED = 'ditolak';
+
+    /**
+     * Request type constants
+     */
+    const TYPE_NEW_ACCOUNT = 'akun_baru';
+    const TYPE_ADD_FARM = 'tambah_kandang';
+    const TYPE_EDIT_ACCOUNT = 'edit_akun';
+    const TYPE_OTHER = 'lainnya';
+
+    /**
+     * Get the user who made the request
+     */
+    public function user()
+    {
+        return $this->belongsTo(User::class, 'user_id', 'user_id');
+    }
+
+    /**
+     * Scope to filter by status
+     */
+    public function scopeByStatus($query, $status)
+    {
+        return $query->where('status', $status);
+    }
+
+    /**
+     * Scope to get pending requests
+     */
+    public function scopePending($query)
+    {
+        return $query->where('status', self::STATUS_PENDING);
+    }
+
+    /**
+     * Scope to get processing requests
+     */
+    public function scopeProcessing($query)
+    {
+        return $query->where('status', self::STATUS_PROCESSING);
+    }
+
+    /**
+     * Scope to get completed requests
+     */
+    public function scopeCompleted($query)
+    {
+        return $query->where('status', self::STATUS_COMPLETED);
+    }
+
+    /**
+     * Scope to order by newest first
+     */
+    public function scopeNewest($query)
+    {
+        return $query->orderBy('sent_time', 'desc');
+    }
+
+    /**
+     * Scope to order by oldest first
+     */
+    public function scopeOldest($query)
+    {
+        return $query->orderBy('sent_time', 'asc');
+    }
+
+    /**
+     * Scope to filter by request type
+     */
+    public function scopeByType($query, $type)
+    {
+        return $query->where('request_type', $type);
+    }
+
+    /**
+     * Mark request as processing
+     */
+    public function markAsProcessing()
+    {
+        $this->update(['status' => self::STATUS_PROCESSING]);
+    }
+
+    /**
+     * Mark request as completed
+     */
+    public function markAsCompleted()
+    {
+        $this->update(['status' => self::STATUS_COMPLETED]);
+    }
+
+    /**
+     * Mark request as rejected
+     */
+    public function markAsRejected()
+    {
+        $this->update(['status' => self::STATUS_REJECTED]);
+    }
+
+    /**
+     * Get status color
+     */
+    public function getStatusColor()
+    {
+        return match($this->status) {
+            self::STATUS_PENDING => 'yellow',
+            self::STATUS_PROCESSING => 'blue',
+            self::STATUS_COMPLETED => 'green',
+            self::STATUS_REJECTED => 'red',
+            default => 'gray',
+        };
+    }
+
+    /**
+     * Get request type label
+     */
+    public function getRequestTypeLabel()
+    {
+        return match($this->request_type) {
+            self::TYPE_NEW_ACCOUNT => 'Akun Baru',
+            self::TYPE_ADD_FARM => 'Tambah Kandang',
+            self::TYPE_EDIT_ACCOUNT => 'Edit Akun',
+            self::TYPE_OTHER => 'Lainnya',
+            default => $this->request_type,
+        };
+    }
+
+    /**
+     * Get formatted display
+     */
+    public function getFormattedDisplay()
+    {
+        $role = 'Guest'; // Default
+        if ($this->user && $this->user->role) {
+            $role = $this->user->role->name;
+        }
+        $name = $this->sender_name;
+
+        if (empty($name)) {
+            if ($this->user) {
+                $name = $this->user->name;
+            }
+            else {
+                $name = ($role === 'Guest') ? 'Tamu' : 'Nama Tidak Tersedia';
+            }
+        }
+
+        $timeString = 'Waktu tidak tersedia';
+        if ($this->sent_time) {
+            $timeString = Carbon::parse($this->sent_time)->diffForHumans();
+        }
+
+        return [
+            'id' => $this->request_id,
+            'name' => $name,
+            'role' => $role,
+            'type' => $this->request_type,
+            'status' => $this->status,
+            'details' => $this->request_content,
+
+            'created_at' => $timeString,
+            'updated_at' => $timeString,
+        ];
+    }
+}
+
+
+
+==================================================
+FILE: app/Models/Farm.php
+==================================================
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Farm extends Model
+{
+    use HasFactory;
+
+    protected $table = 'farms';
+    protected $primaryKey = 'farm_id';
+    public $timestamps = false;
+
+    protected $fillable = [
+        'owner_id',
+        'peternak_id',
+        'farm_name',
+        'location',
+        'initial_population',
+        'initial_weight',
+        'farm_area',
+    ];
+
+    protected $casts = [
+        'initial_population' => 'integer',
+        'initial_weight' => 'float',
+        'farm_area' => 'integer',
+    ];
+
+    /**
+     * Get the owner of this farm
+     */
+    public function owner()
+    {
+        return $this->belongsTo(User::class, 'owner_id', 'user_id');
+    }
+
+    /**
+     * Get the peternak assigned to this farm
+     */
+    public function peternak()
+    {
+        return $this->belongsTo(User::class, 'peternak_id', 'user_id');
+    }
+
+    /**
+     * Get farm configurations
+     */
+    public function configs()
+    {
+        return $this->hasMany(FarmConfig::class, 'farm_id', 'farm_id');
+    }
+
+    /**
+     * Get specific config parameter
+     */
+    public function getConfig($parameterName)
+    {
+        return $this->configs()
+            ->where('parameter_name', $parameterName)
+            ->value('value');
+    }
+
+    /**
+     * Get all configs as key-value pairs
+     */
+    public function getConfigArray()
+    {
+        return $this->configs()
+            ->pluck('value', 'parameter_name')
+            ->toArray();
+    }
+
+    /**
+     * Get IoT sensor data
+     */
+    public function iotData()
+    {
+        return $this->hasMany(IotData::class, 'farm_id', 'farm_id');
+    }
+
+    /**
+     * Get latest sensor data
+     */
+    public function latestSensorData()
+    {
+        return $this->hasOne(IotData::class, 'farm_id', 'farm_id')
+            ->latest('timestamp');
+    }
+
+    /**
+     * Get manual data entries
+     */
+    public function manualData()
+    {
+        return $this->hasMany(ManualData::class, 'farm_id', 'farm_id');
+    }
+
+    /**
+     * Get notifications related to this farm
+     */
+    public function notifications()
+    {
+        return $this->hasMany(NotificationLog::class, 'farm_id', 'farm_id');
+    }
+
+    /**
+     * Calculate farm status based on latest sensor data and config
+     */
+    public function calculateStatus()
+    {
+        $latestData = $this->latestSensorData;
+        
+        if (!$latestData) {
+            return 'normal';
+        }
+
+        $config = $this->getConfigArray();
+        
+        if (empty($config)) {
+            return 'normal';
+        }
+
+        $criticalCount = 0;
+        $warningCount = 0;
+
+        // Check temperature
+        $tempNormalMin = $config['suhu_normal_min'] ?? 28;
+        $tempNormalMax = $config['suhu_normal_max'] ?? 32;
+        $tempCriticalLow = $config['suhu_kritis_rendah'] ?? 26;
+        $tempCriticalHigh = $config['suhu_kritis_tinggi'] ?? 35;
+
+        if ($latestData->temperature < $tempCriticalLow || 
+            $latestData->temperature > $tempCriticalHigh) {
+            $criticalCount++;
+        } elseif ($latestData->temperature < $tempNormalMin || 
+                  $latestData->temperature > $tempNormalMax) {
+            $warningCount++;
+        }
+
+        // Check humidity
+        $humidityNormalMin = $config['kelembapan_normal_min'] ?? 60;
+        $humidityNormalMax = $config['kelembapan_normal_max'] ?? 70;
+        $humidityCriticalLow = $config['kelembapan_kritis_rendah'] ?? 50;
+        $humidityCriticalHigh = $config['kelembapan_kritis_tinggi'] ?? 80;
+
+        if ($latestData->humidity < $humidityCriticalLow || 
+            $latestData->humidity > $humidityCriticalHigh) {
+            $criticalCount++;
+        } elseif ($latestData->humidity < $humidityNormalMin || 
+                  $latestData->humidity > $humidityNormalMax) {
+            $warningCount++;
+        }
+
+        // Check ammonia
+        $ammoniaMax = $config['amonia_max'] ?? 20;
+        $ammoniaCritical = $config['amonia_kritis'] ?? 30;
+
+        if ($latestData->ammonia > $ammoniaCritical) {
+            $criticalCount++;
+        } elseif ($latestData->ammonia > $ammoniaMax) {
+            $warningCount++;
+        }
+
+        // Determine status
+        if ($criticalCount > 0) {
+            return 'bahaya';
+        } elseif ($warningCount >= 2) {
+            return 'waspada';
+        }
+
+        return 'normal';
+    }
+
+    /**
+     * Get status color for UI
+     */
+    public function getStatusColor()
+    {
+        $status = $this->calculateStatus();
+        
+        return match($status) {
+            'normal' => 'green',
+            'waspada' => 'yellow',
+            'bahaya' => 'red',
+            default => 'gray',
+        };
+    }
+
+    /**
+     * Scope to filter farms by owner
+     */
+    public function scopeByOwner($query, $ownerId)
+    {
+        return $query->where('owner_id', $ownerId);
+    }
+
+    /**
+     * Scope to filter farms by peternak
+     */
+    public function scopeByPeternak($query, $peternakId)
+    {
+        return $query->where('peternak_id', $peternakId);
+    }
+}
+
+
+
+==================================================
+FILE: app/Models/FarmConfig.php
+==================================================
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class FarmConfig extends Model
+{
+    use HasFactory;
+
+    protected $table = 'farm_config';
+    protected $primaryKey = 'config_id';
+    public $timestamps = false;
+
+    protected $fillable = [
+        'farm_id',
+        'parameter_name',
+        'value',
+    ];
+
+    protected $casts = [
+        'value' => 'float',
+    ];
+
+    /**
+     * Get the farm that owns this config
+     */
+    public function farm()
+    {
+        return $this->belongsTo(Farm::class, 'farm_id', 'farm_id');
+    }
+
+    /**
+     * Default configuration parameters
+     */
+    public static function getDefaults()
+    {
+        return [
+            'suhu_normal_min' => 28.0,
+            'suhu_normal_max' => 32.0,
+            'suhu_kritis_rendah' => 26.0,
+            'suhu_kritis_tinggi' => 35.0,
+            'kelembapan_normal_min' => 60.0,
+            'kelembapan_normal_max' => 70.0,
+            'kelembapan_kritis_rendah' => 50.0,
+            'kelembapan_kritis_tinggi' => 80.0,
+            'amonia_max' => 20.0,
+            'amonia_kritis' => 30.0,
+            'pakan_min' => 50.0,
+            'minum_min' => 100.0,
+            'pertumbuhan_mingguan_min' => 0.5,
+            'target_bobot' => 2.0,
+        ];
+    }
+
+    /**
+     * Create default configs for a farm
+     */
+    public static function createDefaultsForFarm($farmId)
+    {
+        $defaults = self::getDefaults();
+        
+        foreach ($defaults as $parameter => $value) {
+            self::updateOrCreate(
+                [
+                    'farm_id' => $farmId,
+                    'parameter_name' => $parameter,
+                ],
+                [
+                    'value' => $value,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Update multiple configs for a farm
+     */
+    public static function updateMultiple($farmId, array $configs)
+    {
+        foreach ($configs as $parameter => $value) {
+            self::updateOrCreate(
+                [
+                    'farm_id' => $farmId,
+                    'parameter_name' => $parameter,
+                ],
+                [
+                    'value' => $value,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Scope to filter by farm
+     */
+    public function scopeForFarm($query, $farmId)
+    {
+        return $query->where('farm_id', $farmId);
+    }
+}
+
+
+
+==================================================
+FILE: app/Models/Role.php
+==================================================
+
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Role extends Model
+{
+    use HasFactory;
+
+    protected $table = 'roles';
+
+    protected $fillable = [
+        'name',
+        'description',
+    ];
+
+    /**
+     * Get users with this role
+     */
+    public function users()
+    {
+        return $this->hasMany(User::class, 'role_id', 'id');
+    }
+
+    /**
+     * Role constants
+     */
+    const ROLE_ADMIN = 1;
+    const ROLE_OWNER = 2;
+    const ROLE_PETERNAK = 3;
+
+    /**
+     * Get role ID by name
+     */
+    public static function getIdByName($name)
+    {
+        return self::where('name', $name)->value('id');
+    }
+}
+
+
+
