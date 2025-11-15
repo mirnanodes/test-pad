@@ -45,6 +45,14 @@ class ManualData extends Model
     }
 
     /**
+     * Get the peternak who input this data (alias for user)
+     */
+    public function peternak()
+    {
+        return $this->belongsTo(User::class, 'user_id_input', 'user_id');
+    }
+
+    /**
      * Scope to filter by farm
      */
     public function scopeForFarm($query, $farmId)
