@@ -76,49 +76,57 @@ class UserManagementController extends Controller
      */
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'username' => 'required|string|max:50|unique:users,username',
-            'email' => 'required|email|max:100|unique:users,email',
-            'password' => 'required|string|min:6',
-            'name' => 'required|string|max:100',
-            'role_id' => 'required|exists:roles,id',
-            'phone_number' => 'nullable|string|max:20',
-            'status' => 'required|in:active,inactive',
-            'farm_id' => 'nullable|exists:farms,farm_id', // untuk peternak
-        ]);
+        try {
+            $validated = $request->validate([
+                'username' => 'required|string|max:50|unique:users,username',
+                'email' => 'required|email|max:100|unique:users,email',
+                'password' => 'required|string|min:6',
+                'name' => 'required|string|max:100',
+                'role_id' => 'required|exists:roles,id',
+                'phone_number' => 'nullable|string|max:20',
+                'status' => 'required|in:active,inactive',
+                'farm_id' => 'nullable|exists:farms,farm_id', // untuk peternak
+            ]);
 
-        // Tidak boleh create admin
-        if ($validated['role_id'] == Role::ROLE_ADMIN) {
+            // Tidak boleh create admin
+            if ($validated['role_id'] == Role::ROLE_ADMIN) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tidak dapat membuat user dengan role Admin',
+                ], 403);
+            }
+
+            $user = User::create([
+                'username' => $validated['username'],
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'name' => $validated['name'],
+                'role_id' => $validated['role_id'],
+                'phone_number' => $validated['phone_number'] ?? null,
+                'status' => $validated['status'],
+                'date_joined' => now(),
+            ]);
+
+            // Jika peternak, assign ke farm
+            if ($validated['role_id'] == Role::ROLE_PETERNAK && isset($validated['farm_id'])) {
+                $farm = \App\Models\Farm::find($validated['farm_id']);
+                if ($farm) {
+                    $farm->update(['peternak_id' => $user->user_id]);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User berhasil dibuat',
+                'data' => $user->load('role'),
+            ], 201);
+        } catch (\Exception $e) {
+            \Log::error('Error creating user: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Tidak dapat membuat user dengan role Admin',
-            ], 403);
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        $user = User::create([
-            'username' => $validated['username'],
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
-            'name' => $validated['name'],
-            'role_id' => $validated['role_id'],
-            'phone_number' => $validated['phone_number'] ?? null,
-            'status' => $validated['status'],
-            'date_joined' => now(),
-        ]);
-
-        // Jika peternak, assign ke farm
-        if ($validated['role_id'] == Role::ROLE_PETERNAK && isset($validated['farm_id'])) {
-            $farm = \App\Models\Farm::find($validated['farm_id']);
-            if ($farm) {
-                $farm->update(['peternak_id' => $user->user_id]);
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'User berhasil dibuat',
-            'data' => $user->load('role'),
-        ], 201);
     }
 
     /**
@@ -173,50 +181,58 @@ class UserManagementController extends Controller
      */
     public function update(Request $request, $id)
     {
-        $user = User::findOrFail($id);
+        try {
+            $user = User::findOrFail($id);
 
-        // Tidak boleh edit admin
-        if ($user->isAdmin()) {
+            // Tidak boleh edit admin
+            if ($user->isAdmin()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tidak dapat mengubah user Admin',
+                ], 403);
+            }
+
+            $validated = $request->validate([
+                'username' => ['sometimes', 'string', 'max:50', Rule::unique('users')->ignore($user->user_id, 'user_id')],
+                'email' => ['sometimes', 'email', 'max:100', Rule::unique('users')->ignore($user->user_id, 'user_id')],
+                'password' => 'sometimes|string|min:6',
+                'name' => 'sometimes|string|max:100',
+                'phone_number' => 'nullable|string|max:20',
+                'status' => 'sometimes|in:active,inactive',
+                'farm_id' => 'nullable|exists:farms,farm_id',
+            ]);
+
+            if (isset($validated['password'])) {
+                $validated['password'] = Hash::make($validated['password']);
+            }
+
+            $user->update($validated);
+
+            // Update farm assignment for peternak
+            if ($user->isPeternak() && isset($validated['farm_id'])) {
+                // Remove from old farm
+                if ($user->assignedFarm) {
+                    $user->assignedFarm->update(['peternak_id' => null]);
+                }
+                // Assign to new farm
+                $farm = \App\Models\Farm::find($validated['farm_id']);
+                if ($farm) {
+                    $farm->update(['peternak_id' => $user->user_id]);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User berhasil diupdate',
+                'data' => $user->load('role'),
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error updating user: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Tidak dapat mengubah user Admin',
-            ], 403);
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        $validated = $request->validate([
-            'username' => ['sometimes', 'string', 'max:50', Rule::unique('users')->ignore($user->user_id, 'user_id')],
-            'email' => ['sometimes', 'email', 'max:100', Rule::unique('users')->ignore($user->user_id, 'user_id')],
-            'password' => 'sometimes|string|min:6',
-            'name' => 'sometimes|string|max:100',
-            'phone_number' => 'nullable|string|max:20',
-            'status' => 'sometimes|in:active,inactive',
-            'farm_id' => 'nullable|exists:farms,farm_id',
-        ]);
-
-        if (isset($validated['password'])) {
-            $validated['password'] = Hash::make($validated['password']);
-        }
-
-        $user->update($validated);
-
-        // Update farm assignment for peternak
-        if ($user->isPeternak() && isset($validated['farm_id'])) {
-            // Remove from old farm
-            if ($user->assignedFarm) {
-                $user->assignedFarm->update(['peternak_id' => null]);
-            }
-            // Assign to new farm
-            $farm = \App\Models\Farm::find($validated['farm_id']);
-            if ($farm) {
-                $farm->update(['peternak_id' => $user->user_id]);
-            }
-        }
-
-        return response()->json([
-            'success' => true,
-            'message' => 'User berhasil diupdate',
-            'data' => $user->load('role'),
-        ]);
     }
 
     /**
@@ -225,26 +241,34 @@ class UserManagementController extends Controller
      */
     public function destroy($id)
     {
-        $user = User::findOrFail($id);
+        try {
+            $user = User::findOrFail($id);
 
-        // Tidak boleh delete admin
-        if ($user->isAdmin()) {
+            // Tidak boleh delete admin
+            if ($user->isAdmin()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tidak dapat menghapus user Admin',
+                ], 403);
+            }
+
+            // Remove farm assignment if peternak
+            if ($user->isPeternak() && $user->assignedFarm) {
+                $user->assignedFarm->update(['peternak_id' => null]);
+            }
+
+            $user->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User berhasil dihapus',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error deleting user: ' . $e->getMessage());
             return response()->json([
                 'success' => false,
-                'message' => 'Tidak dapat menghapus user Admin',
-            ], 403);
+                'message' => $e->getMessage()
+            ], 500);
         }
-
-        // Remove farm assignment if peternak
-        if ($user->isPeternak() && $user->assignedFarm) {
-            $user->assignedFarm->update(['peternak_id' => null]);
-        }
-
-        $user->delete();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'User berhasil dihapus',
-        ]);
     }
 }

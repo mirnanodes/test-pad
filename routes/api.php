@@ -64,12 +64,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/requests', [RequestLogController::class, 'index']);
         Route::get('/requests/{id}', [RequestLogController::class, 'show']);
         Route::put('/requests/{id}/status', [RequestLogController::class, 'updateStatus']);
-    });
 
-    // Farm Configuration (line ~68)
+        // Farm Configuration
         Route::get('/farm-config', [AdminFarmConfigController::class, 'getFarmConfig']);
         Route::put('/farm-config', [AdminFarmConfigController::class, 'updateFarmConfig']);
         Route::post('/farm-config/reset', [AdminFarmConfigController::class, 'resetConfig']);
+    });
 
     // Owner routes
         Route::prefix('owner')->middleware('role:Owner')->group(function () {

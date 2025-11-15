@@ -27,21 +27,29 @@ class FarmConfigController extends Controller
 
     public function store(Request $request)
     {
-        $validated = $request->validate([
-            'owner_id' => 'required|exists:users,user_id',
-            'farm_name' => 'required|string|max:100',
-            'location' => 'nullable|string|max:255',
-            'initial_population' => 'nullable|integer',
-            'initial_weight' => 'nullable|numeric',
-            'farm_area' => 'nullable|integer',
-        ]);
+        try {
+            $validated = $request->validate([
+                'owner_id' => 'required|exists:users,user_id',
+                'farm_name' => 'required|string|max:100',
+                'location' => 'nullable|string|max:255',
+                'initial_population' => 'nullable|integer',
+                'initial_weight' => 'nullable|numeric',
+                'farm_area' => 'nullable|integer',
+            ]);
 
-        $farm = Farm::create($validated);
+            $farm = Farm::create($validated);
 
-        // Create default config
-        FarmConfig::createDefaultsForFarm($farm->farm_id);
+            // Create default config
+            FarmConfig::createDefaultsForFarm($farm->farm_id);
 
-        return response()->json(['success' => true, 'message' => 'Farm berhasil dibuat', 'data' => $farm], 201);
+            return response()->json(['success' => true, 'message' => 'Farm berhasil dibuat', 'data' => $farm], 201);
+        } catch (\Exception $e) {
+            \Log::error('Error creating farm: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function show($id)
@@ -67,78 +75,118 @@ class FarmConfigController extends Controller
 
     public function update(Request $request, $id)
     {
-        $farm = Farm::findOrFail($id);
+        try {
+            $farm = Farm::findOrFail($id);
 
-        $validated = $request->validate([
-            'farm_name' => 'sometimes|string|max:100',
-            'location' => 'nullable|string|max:255',
-            'initial_population' => 'nullable|integer',
-            'initial_weight' => 'nullable|numeric',
-            'farm_area' => 'nullable|integer',
-            'peternak_id' => 'nullable|exists:users,user_id',
-        ]);
+            $validated = $request->validate([
+                'farm_name' => 'sometimes|string|max:100',
+                'location' => 'nullable|string|max:255',
+                'initial_population' => 'nullable|integer',
+                'initial_weight' => 'nullable|numeric',
+                'farm_area' => 'nullable|integer',
+                'peternak_id' => 'nullable|exists:users,user_id',
+            ]);
 
-        $farm->update($validated);
+            $farm->update($validated);
 
-        return response()->json(['success' => true, 'message' => 'Farm berhasil diupdate', 'data' => $farm]);
+            return response()->json(['success' => true, 'message' => 'Farm berhasil diupdate', 'data' => $farm]);
+        } catch (\Exception $e) {
+            \Log::error('Error updating farm: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function destroy($id)
     {
-        Farm::findOrFail($id)->delete();
-        return response()->json(['success' => true, 'message' => 'Farm berhasil dihapus']);
+        try {
+            Farm::findOrFail($id)->delete();
+            return response()->json(['success' => true, 'message' => 'Farm berhasil dihapus']);
+        } catch (\Exception $e) {
+            \Log::error('Error deleting farm: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 
     public function getFarmConfig(Request $request)
-{
-    $farmId = $request->farm_id ?? 1;
-    $farm = Farm::findOrFail($farmId);
-    $config = $farm->getConfigArray();
+    {
+        try {
+            $farmId = $request->farm_id ?? 1;
+            $farm = Farm::findOrFail($farmId);
+            $config = $farm->getConfigArray();
 
-    return response()->json([
-        'success' => true,
-        'data' => $config
-    ]);
-}
+            return response()->json([
+                'success' => true,
+                'data' => $config
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error getting farm config: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
 
     public function updateFarmConfig(Request $request)
-{
-    $farmId = $request->farm_id ?? 1;
+    {
+        try {
+            $farmId = $request->farm_id ?? 1;
 
-        $validated = $request->validate([
-            'suhu_normal_min' => 'nullable|numeric',
-            'suhu_normal_max' => 'nullable|numeric',
-            'suhu_kritis_rendah' => 'nullable|numeric',
-            'suhu_kritis_tinggi' => 'nullable|numeric',
-            'kelembapan_normal_min' => 'nullable|numeric',
-            'kelembapan_normal_max' => 'nullable|numeric',
-            'kelembapan_kritis_rendah' => 'nullable|numeric',
-            'kelembapan_kritis_tinggi' => 'nullable|numeric',
-            'amonia_max' => 'nullable|numeric',
-            'amonia_kritis' => 'nullable|numeric',
-            'pakan_min' => 'nullable|numeric',
-            'minum_min' => 'nullable|numeric',
-            'pertumbuhan_mingguan_min' => 'nullable|numeric',
-            'target_bobot' => 'nullable|numeric',
-        ]);
+            $validated = $request->validate([
+                'suhu_normal_min' => 'nullable|numeric',
+                'suhu_normal_max' => 'nullable|numeric',
+                'suhu_kritis_rendah' => 'nullable|numeric',
+                'suhu_kritis_tinggi' => 'nullable|numeric',
+                'kelembapan_normal_min' => 'nullable|numeric',
+                'kelembapan_normal_max' => 'nullable|numeric',
+                'kelembapan_kritis_rendah' => 'nullable|numeric',
+                'kelembapan_kritis_tinggi' => 'nullable|numeric',
+                'amonia_max' => 'nullable|numeric',
+                'amonia_kritis' => 'nullable|numeric',
+                'pakan_min' => 'nullable|numeric',
+                'minum_min' => 'nullable|numeric',
+                'pertumbuhan_mingguan_min' => 'nullable|numeric',
+                'target_bobot' => 'nullable|numeric',
+            ]);
 
-        FarmConfig::updateMultiple($farmId, $validated);
+            FarmConfig::updateMultiple($farmId, $validated);
 
-    return response()->json([
-        'success' => true,
-        'message' => 'Konfigurasi berhasil diupdate'
-    ]);
-}
+            return response()->json([
+                'success' => true,
+                'message' => 'Konfigurasi berhasil diupdate'
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error updating farm config: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
 
     public function resetConfig(Request $request)
-{
-    $farmId = $request->farm_id ?? 1;
-    FarmConfig::createDefaultsForFarm($farmId);
-    
-    return response()->json([
-        'success' => true,
-        'message' => 'Konfigurasi berhasil direset ke default'
-    ]);
-}
+    {
+        try {
+            $farmId = $request->farm_id ?? 1;
+            FarmConfig::createDefaultsForFarm($farmId);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Konfigurasi berhasil direset ke default'
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Error resetting farm config: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage()
+            ], 500);
+        }
+    }
 
 }
